@@ -250,9 +250,21 @@ func evictPodsFromSourceNodes(
 		v1.ResourceMemory: {},
 	}
 
+	filterNodeTaints := func(taints []v1.Taint) []v1.Taint {
+		var ret []v1.Taint
+		for _, t := range taints {
+			// exclude PreferNoSchedule
+			if t.Effect != v1.TaintEffectPreferNoSchedule {
+				ret = append(ret, t)
+			}
+		}
+
+		return ret
+	}
+
 	var taintsOfDestinationNodes = make(map[string][]v1.Taint, len(destinationNodes))
 	for _, node := range destinationNodes {
-		taintsOfDestinationNodes[node.node.Name] = node.node.Spec.Taints
+		taintsOfDestinationNodes[node.node.Name] = filterNodeTaints(node.node.Spec.Taints)
 
 		for _, name := range resourceNames {
 			if _, ok := totalAvailableUsage[name]; !ok {
