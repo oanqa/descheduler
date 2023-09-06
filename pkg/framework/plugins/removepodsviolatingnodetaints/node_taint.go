@@ -19,6 +19,7 @@ package removepodsviolatingnodetaints
 import (
 	"context"
 	"fmt"
+	"time"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -26,6 +27,7 @@ import (
 	"k8s.io/klog/v2"
 
 	"sigs.k8s.io/descheduler/pkg/descheduler/evictions"
+	nodeutil "sigs.k8s.io/descheduler/pkg/descheduler/node"
 	podutil "sigs.k8s.io/descheduler/pkg/descheduler/pod"
 	frameworktypes "sigs.k8s.io/descheduler/pkg/framework/types"
 	"sigs.k8s.io/descheduler/pkg/utils"
@@ -111,14 +113,50 @@ func (d *RemovePodsViolatingNodeTaints) Deschedule(ctx context.Context, nodes []
 				node.Spec.Taints,
 				d.taintFilterFnc,
 			) {
+				if !fitsOtherNode(d.handle.GetPodsAssignedToNodeFunc(), pods[i], nodes) {
+					klog.V(3).InfoS("Skipping eviction for pod, doesn't fits other node", "pod", klog.KObj(pods[i]))
+					continue
+				}
+
 				klog.V(2).InfoS("Not all taints with NoSchedule effect are tolerated after update for pod on node", "pod", klog.KObj(pods[i]), "node", klog.KObj(node))
 				d.handle.Evictor().Evict(ctx, pods[i], evictions.EvictOptions{})
 				if d.handle.Evictor().NodeLimitExceeded(node) {
 					break
 				}
+
+				time.Sleep(200 * time.Millisecond)
 			}
 		}
 	}
 
 	return nil
+}
+
+func fitsOtherNode(nodeIndexer podutil.GetPodsAssignedToNodeFunc, pod *v1.Pod, nodes []*v1.Node) bool {
+	for _, node := range nodes {
+		if node.Name == pod.Spec.NodeName {
+			continue
+		}
+
+		errors := nodeutil.NodeFit(nodeIndexer, pod, node)
+
+		ok := utils.TolerationsTolerateTaintsWithFilter(pod.Spec.Tolerations, node.Spec.Taints, func(taint *v1.Taint) bool {
+			return taint.Effect == v1.TaintEffectNoSchedule || taint.Effect == v1.TaintEffectNoExecute || taint.Effect == v1.TaintEffectPreferNoSchedule
+		})
+		if !ok {
+			errors = append(errors, fmt.Errorf("pod does not tolerate taints on the node"))
+		}
+
+		if len(errors) == 0 {
+			klog.V(4).InfoS("Pod fits on node", "pod", klog.KObj(pod), "node", klog.KObj(node))
+			return true
+		} else {
+			klog.V(4).InfoS("Pod does not fit on node", "pod", klog.KObj(pod), "node", klog.KObj(node))
+			for _, err := range errors {
+				klog.V(4).InfoS(err.Error())
+			}
+		}
+	}
+
+	return false
 }
