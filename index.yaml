@@ -2,9 +2,35 @@ apiVersion: v1
 entries:
   descheduler:
   - apiVersion: v1
+    appVersion: 0.31.0
+    created: "2025-01-07T17:21:03.613537214Z"
+    description: Descheduler for Kubernetes is used to rebalance clusters by evicting
+      pods that can potentially be scheduled on better nodes. In the current implementation,
+      descheduler does not schedule replacement of evicted pods but relies on the
+      default scheduler for that.
+    digest: d769b003c24a71510a10dcdbf94f3dee8d10a1b4871b7a8f2e7280fad4a78884
+    home: https://github.com/kubernetes-sigs/descheduler
+    icon: https://kubernetes.io/images/favicon.png
+    keywords:
+    - kubernetes
+    - descheduler
+    - kube-scheduler
+    maintainers:
+    - email: kubernetes-sig-scheduling@googlegroups.com
+      name: Kubernetes SIG Scheduling
+    name: descheduler
+    sources:
+    - https://github.com/kubernetes-sigs/descheduler
+    urls:
+    - https://github.com/oanqa/descheduler/releases/download/descheduler-helm-chart-0.31.0/descheduler-0.31.0.tgz
+    version: 0.31.0
+  - apiVersion: v1
     appVersion: 0.29.0
     created: "2024-02-07T09:22:53.230272416Z"
-    description: Descheduler for Kubernetes is used to rebalance clusters by evicting pods that can potentially be scheduled on better nodes. In the current implementation, descheduler does not schedule replacement of evicted pods but relies on the default scheduler for that.
+    description: Descheduler for Kubernetes is used to rebalance clusters by evicting
+      pods that can potentially be scheduled on better nodes. In the current implementation,
+      descheduler does not schedule replacement of evicted pods but relies on the
+      default scheduler for that.
     digest: c1ef6bcc013c432b25ee5c8b9a22a072186b40b6dbe0396cd0bdebe7172051c0
     home: https://github.com/kubernetes-sigs/descheduler
     icon: https://kubernetes.io/images/favicon.png
@@ -21,4 +47,4 @@ entries:
     urls:
     - https://github.com/oanqa/descheduler/releases/download/descheduler-helm-chart-0.29.0/descheduler-0.29.0.tgz
     version: 0.29.0
-generated: "2024-02-07T09:22:53.10676423Z"
+generated: "2025-01-07T17:21:03.613548876Z"
