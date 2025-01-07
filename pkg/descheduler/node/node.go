@@ -181,6 +181,20 @@ func PodFitsAnyOtherNode(nodeIndexer podutil.GetPodsAssignedToNodeFunc, pod *v1.
 	})
 }
 
+func PodFitsAnyOtherNodeWithTaints(nodeIndexer podutil.GetPodsAssignedToNodeFunc, pod *v1.Pod, nodes []*v1.Node) bool {
+	return podFitsNodes(nodeIndexer, pod, nodes, func(pod *v1.Pod, node *v1.Node) bool {
+		if pod.Spec.NodeName == node.Name {
+			return true
+		}
+
+		if !utils.TolerationsTolerateTaintsWithFilter(pod.Spec.Tolerations, node.Spec.Taints, nil) {
+			return true
+		}
+
+		return false
+	})
+}
+
 // PodFitsAnyNode checks if the given pod will fit any of the given nodes. The predicates used
 // to determine if the pod will fit can be found in the NodeFit function.
 func PodFitsAnyNode(nodeIndexer podutil.GetPodsAssignedToNodeFunc, pod *v1.Pod, nodes []*v1.Node) bool {
