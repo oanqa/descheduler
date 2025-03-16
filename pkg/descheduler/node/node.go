@@ -187,8 +187,8 @@ func PodFitsAnyOtherNodeWithTaints(nodeIndexer podutil.GetPodsAssignedToNodeFunc
 			return true
 		}
 
-		if !utils.TolerationsTolerateTaintsWithFilter(pod.Spec.Tolerations, node.Spec.Taints, nil) {
-			return true
+		if utils.PodToleratesTaints(pod, map[string][]v1.Taint{node.Name: node.Spec.Taints}) {
+			return false
 		}
 
 		return false
