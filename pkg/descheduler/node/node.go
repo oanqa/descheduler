@@ -181,14 +181,14 @@ func PodFitsAnyOtherNode(nodeIndexer podutil.GetPodsAssignedToNodeFunc, pod *v1.
 	})
 }
 
-func PodFitsAnyOtherNodeWithTaints(nodeIndexer podutil.GetPodsAssignedToNodeFunc, pod *v1.Pod, nodes []*v1.Node) bool {
+func PodFitsAnyOtherNodeExceptKarpenter(nodeIndexer podutil.GetPodsAssignedToNodeFunc, pod *v1.Pod, nodes []*v1.Node) bool {
 	return podFitsNodes(nodeIndexer, pod, nodes, func(pod *v1.Pod, node *v1.Node) bool {
 		if pod.Spec.NodeName == node.Name {
 			return true
 		}
 
-		if utils.PodToleratesTaints(pod, map[string][]v1.Taint{node.Name: node.Spec.Taints}) {
-			return false
+		if _, ok := node.Labels["karpenter.sh/registered"]; ok {
+			return true
 		}
 
 		return false

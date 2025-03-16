@@ -123,7 +123,7 @@ func (d *RemovePodsViolatingNodeTaints) Deschedule(ctx context.Context, nodes []
 				node.Spec.Taints,
 				d.taintFilterFnc,
 			) {
-				if !nodeutil.PodFitsAnyOtherNodeWithTaints(d.handle.GetPodsAssignedToNodeFunc(), pods[i], nodes) {
+				if !nodeutil.PodFitsAnyOtherNodeExceptKarpenter(d.handle.GetPodsAssignedToNodeFunc(), pods[i], nodes) {
 					klog.V(3).InfoS("Skipping eviction for pod, doesn't fits other node", "pod", klog.KObj(pods[i]))
 					continue
 				}
