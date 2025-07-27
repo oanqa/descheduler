@@ -19,6 +19,7 @@ package removepodsviolatingnodetaints
 import (
 	"context"
 	"fmt"
+	"time"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -26,6 +27,7 @@ import (
 	"k8s.io/klog/v2"
 
 	"sigs.k8s.io/descheduler/pkg/descheduler/evictions"
+	nodeutil "sigs.k8s.io/descheduler/pkg/descheduler/node"
 	podutil "sigs.k8s.io/descheduler/pkg/descheduler/pod"
 	frameworktypes "sigs.k8s.io/descheduler/pkg/framework/types"
 	"sigs.k8s.io/descheduler/pkg/utils"
@@ -121,8 +123,16 @@ func (d *RemovePodsViolatingNodeTaints) Deschedule(ctx context.Context, nodes []
 				node.Spec.Taints,
 				d.taintFilterFnc,
 			) {
+				if !nodeutil.PodFitsAnyOtherNodeExceptKarpenter(d.handle.GetPodsAssignedToNodeFunc(), pods[i], nodes) {
+					klog.V(3).InfoS("Skipping eviction for pod, doesn't fits other node", "pod", klog.KObj(pods[i]))
+					continue
+				}
+
 				klog.V(2).InfoS("Not all taints with NoSchedule effect are tolerated after update for pod on node", "pod", klog.KObj(pods[i]), "node", klog.KObj(node))
 				err := d.handle.Evictor().Evict(ctx, pods[i], evictions.EvictOptions{StrategyName: PluginName})
+
+				time.Sleep(500 * time.Millisecond)
+
 				if err == nil {
 					continue
 				}
