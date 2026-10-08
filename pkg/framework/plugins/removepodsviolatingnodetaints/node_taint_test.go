@@ -116,6 +116,13 @@ func withPreferNoScheduleTestTaint1(node *v1.Node) {
 	}
 }
 
+func withKarpenterRegisteredLabel(node *v1.Node) {
+	if node.Labels == nil {
+		node.Labels = map[string]string{}
+	}
+	node.Labels["karpenter.sh/registered"] = "true"
+}
+
 func addTolerationToPod(pod *v1.Pod, key, value string, index int, effect v1.TaintEffect) *v1.Pod {
 	if pod.Annotations == nil {
 		pod.Annotations = map[string]string{}
@@ -463,6 +470,36 @@ func TestDeletePodsViolatingNodeTaints(t *testing.T) {
 				buildTestNode(nodeName7, withBothTaints1),
 			},
 			expectedEvictedPodCount: 1, // includedTaints is empty so all taints are included. p15 tolerates both node taints and does not get evicted. p14 tolerate only one and gets evicted
+		},
+		{
+			description: "Only as many pods as the remaining capacity of other nodes allows should be evicted",
+			pods: []*v1.Pod{
+				buildTestPodWithNormalOwnerRef("p2", nodeName1, nil),
+				buildTestPodWithNormalOwnerRef("p3", nodeName1, nil),
+				buildTestPodWithNormalOwnerRef("p4", nodeName1, nil),
+				buildTestPodWithNormalOwnerRef("p5", nodeName1, nil),
+				buildTestPodWithNormalOwnerRef("p6", nodeName1, nil),
+			},
+			nodes: []*v1.Node{
+				buildTestNode(nodeName1, withTestTaint1),
+				// nodeName2 only has room for a single pod, so only one pod can be evicted
+				test.BuildTestNode(nodeName2, 2000, 3000, 1, nil),
+			},
+			nodeFit:                 true,
+			expectedEvictedPodCount: 1,
+		},
+		{
+			description: "Pods should not be evicted when only Karpenter nodes can accommodate them",
+			pods: []*v1.Pod{
+				buildTestPodWithNormalOwnerRef("p2", nodeName1, nil),
+				buildTestPodWithNormalOwnerRef("p3", nodeName1, nil),
+			},
+			nodes: []*v1.Node{
+				buildTestNode(nodeName1, withTestTaint1),
+				test.BuildTestNode(nodeName2, 2000, 3000, 10, withKarpenterRegisteredLabel),
+			},
+			nodeFit:                 true,
+			expectedEvictedPodCount: 0,
 		},
 	}
 

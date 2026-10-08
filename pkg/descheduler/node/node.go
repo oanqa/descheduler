@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync/atomic"
 
 	v1 "k8s.io/api/core/v1"
@@ -132,6 +133,12 @@ func IsReady(node *v1.Node) bool {
 // The checks are ordered from fastest to slowest to reduce unnecessary computation,
 // especially for nodes that are clearly unsuitable early in the evaluation process.
 func NodeFit(ctx context.Context, nodeIndexer podutil.GetPodsAssignedToNodeFunc, pod *v1.Pod, node *v1.Node) error {
+	return nodeFit(ctx, nodeIndexer, pod, node, nil)
+}
+
+// nodeFit is the implementation backing NodeFit. It additionally accounts for the resource
+// requests of extraPods, which are treated as if they were already assigned to the node.
+func nodeFit(ctx context.Context, nodeIndexer podutil.GetPodsAssignedToNodeFunc, pod *v1.Pod, node *v1.Node, extraPods []*v1.Pod) error {
 	// Check if the node is marked as unschedulable.
 	if IsNodeUnschedulable(node) {
 		return errors.New("node is not schedulable")
@@ -162,7 +169,7 @@ func NodeFit(ctx context.Context, nodeIndexer podutil.GetPodsAssignedToNodeFunc,
 
 	// Check whether the node has enough available resources to accommodate the pod.
 	if pod.Spec.NodeName == "" || pod.Spec.NodeName != node.Name {
-		if ok, reqError := fitsRequest(nodeIndexer, pod, node); !ok {
+		if ok, reqError := fitsRequestWithPods(nodeIndexer, pod, node, extraPods); !ok {
 			return reqError
 		}
 	}
@@ -204,6 +211,89 @@ func PodFitsAnyOtherNode(nodeIndexer podutil.GetPodsAssignedToNodeFunc, pod *v1.
 	})
 }
 
+// PodFitsAnyOtherNodeExceptKarpenter checks if the given pod will fit any of the given nodes,
+// besides the node the pod is already running on and nodes managed by Karpenter. The predicates
+// used to determine if the pod will fit can be found in the NodeFit function.
+func PodFitsAnyOtherNodeExceptKarpenter(nodeIndexer podutil.GetPodsAssignedToNodeFunc, pod *v1.Pod, nodes []*v1.Node) bool {
+	return podFitsNodes(nodeIndexer, pod, nodes, func(pod *v1.Pod, node *v1.Node) bool {
+		if pod.Spec.NodeName == node.Name {
+			return true
+		}
+
+		if _, ok := node.Labels["karpenter.sh/registered"]; ok {
+			return true
+		}
+
+		return false
+	})
+}
+
+// PodFitResult describes the outcome of searching for a node that can accommodate a pod.
+type PodFitResult struct {
+	// Node is the node the pod fits on, if any. It is nil when no candidate node fits.
+	Node *v1.Node
+	// ResourceLimited is true when the pod was rejected from every non-Karpenter candidate
+	// node solely because of insufficient resources. In this case the remaining cluster
+	// capacity cannot absorb another eviction and the pod should not be evicted.
+	ResourceLimited bool
+	// KarpenterOnly is true when there were no non-Karpenter candidate nodes but at least one
+	// Karpenter-managed candidate node. The pod should not be evicted in this case, as it would
+	// only be rescheduled onto a Karpenter-managed node.
+	KarpenterOnly bool
+}
+
+// PodFitsAnyOtherNodeExceptKarpenterAccounting checks if the given pod will fit any of the given
+// nodes, besides the node the pod is already running on and nodes managed by Karpenter. Unlike
+// PodFitsAnyOtherNodeExceptKarpenter, the resource requests of the pods in pendingPods are
+// subtracted from each candidate node, so pods that have already been selected for eviction and
+// tentatively placed there are taken into account. This prevents evicting more pods than the
+// remaining cluster capacity can absorb. See PodFitResult for the outcome.
+func PodFitsAnyOtherNodeExceptKarpenterAccounting(nodeIndexer podutil.GetPodsAssignedToNodeFunc, pod *v1.Pod, nodes []*v1.Node, pendingPods map[string][]*v1.Pod) PodFitResult {
+	ctx := context.Background()
+
+	var nonKarpenterCandidates, karpenterCandidates int
+	resourceLimited := true
+
+	for _, node := range nodes {
+		if pod.Spec.NodeName == node.Name {
+			continue
+		}
+
+		if _, ok := node.Labels["karpenter.sh/registered"]; ok {
+			karpenterCandidates++
+			continue
+		}
+		nonKarpenterCandidates++
+
+		err := nodeFit(ctx, nodeIndexer, pod, node, pendingPods[node.Name])
+		if err == nil {
+			klog.V(4).InfoS("Pod fits on node", "pod", klog.KObj(pod), "node", klog.KObj(node))
+			return PodFitResult{Node: node}
+		}
+		klog.V(4).InfoS("Pod does not fit on node", "pod", klog.KObj(pod), "node", klog.KObj(node), "err", err.Error())
+
+		if !isInsufficientResourceError(err) {
+			resourceLimited = false
+		}
+	}
+
+	if nonKarpenterCandidates > 0 && resourceLimited {
+		return PodFitResult{ResourceLimited: true}
+	}
+
+	if nonKarpenterCandidates == 0 && karpenterCandidates > 0 {
+		return PodFitResult{KarpenterOnly: true}
+	}
+
+	return PodFitResult{}
+}
+
+// isInsufficientResourceError reports whether the given error returned by NodeFit indicates that
+// the node was rejected because it lacks the resources requested by the pod.
+func isInsufficientResourceError(err error) bool {
+	return strings.HasPrefix(err.Error(), "insufficient ")
+}
+
 // PodFitsAnyNode checks if the given pod will fit any of the given nodes. The predicates used
 // to determine if the pod will fit can be found in the NodeFit function.
 func PodFitsAnyNode(nodeIndexer podutil.GetPodsAssignedToNodeFunc, pod *v1.Pod, nodes []*v1.Node) bool {
@@ -234,6 +324,13 @@ func IsNodeUnschedulable(node *v1.Node) bool {
 // fitsRequest determines if a pod can fit on a node based on its resource requests. It returns true if
 // the pod will fit.
 func fitsRequest(nodeIndexer podutil.GetPodsAssignedToNodeFunc, pod *v1.Pod, node *v1.Node) (bool, error) {
+	return fitsRequestWithPods(nodeIndexer, pod, node, nil)
+}
+
+// fitsRequestWithPods determines if a pod can fit on a node based on its resource requests. It
+// additionally accounts for the resource requests of extraPods, which are treated as if they
+// were already assigned to the node. It returns true if the pod will fit.
+func fitsRequestWithPods(nodeIndexer podutil.GetPodsAssignedToNodeFunc, pod *v1.Pod, node *v1.Node, extraPods []*v1.Pod) (bool, error) {
 	// Get pod requests
 	podRequests, _ := utils.PodRequestsAndLimits(pod)
 	resourceNames := []v1.ResourceName{v1.ResourcePods}
@@ -241,7 +338,7 @@ func fitsRequest(nodeIndexer podutil.GetPodsAssignedToNodeFunc, pod *v1.Pod, nod
 		resourceNames = append(resourceNames, name)
 	}
 
-	availableResources, err := nodeAvailableResources(nodeIndexer, node, resourceNames,
+	availableResources, err := nodeAvailableResourcesWithPods(nodeIndexer, node, resourceNames, extraPods,
 		func(pod *v1.Pod) (v1.ResourceList, error) {
 			req, _ := utils.PodRequestsAndLimits(pod)
 			return req, nil
@@ -293,6 +390,33 @@ func nodeAvailableResources(nodeIndexer podutil.GetPodsAssignedToNodeFunc, node 
 				remainingResources[name] = resource.NewQuantity(allocatableResource.Value()-nodeUtilization[name].Value(), resource.DecimalSI)
 			} else {
 				remainingResources[name] = resource.NewQuantity(0, resource.DecimalSI)
+			}
+		}
+	}
+
+	return remainingResources, nil
+}
+
+// nodeAvailableResourcesWithPods is like nodeAvailableResources but additionally subtracts the
+// resource requests of extraPods, which are treated as if they were already assigned to the node.
+func nodeAvailableResourcesWithPods(nodeIndexer podutil.GetPodsAssignedToNodeFunc, node *v1.Node, resourceNames []v1.ResourceName, extraPods []*v1.Pod, podUtilization podutil.PodUtilizationFnc) (api.ReferencedResourceList, error) {
+	remainingResources, err := nodeAvailableResources(nodeIndexer, node, resourceNames, podUtilization)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, extraPod := range extraPods {
+		extraPodUtilization, err := podUtilization(extraPod)
+		if err != nil {
+			return nil, err
+		}
+		for _, name := range resourceNames {
+			if name == v1.ResourcePods {
+				remainingResources[name].Sub(*resource.NewQuantity(1, resource.DecimalSI))
+				continue
+			}
+			if quantity, ok := extraPodUtilization[name]; ok {
+				remainingResources[name].Sub(quantity)
 			}
 		}
 	}

@@ -26,6 +26,7 @@ import (
 	"k8s.io/klog/v2"
 
 	"sigs.k8s.io/descheduler/pkg/descheduler/evictions"
+	nodeutil "sigs.k8s.io/descheduler/pkg/descheduler/node"
 	podutil "sigs.k8s.io/descheduler/pkg/descheduler/pod"
 	frameworktypes "sigs.k8s.io/descheduler/pkg/framework/types"
 	"sigs.k8s.io/descheduler/pkg/utils"
@@ -109,6 +110,12 @@ func (d *RemovePodsViolatingNodeTaints) Name() string {
 func (d *RemovePodsViolatingNodeTaints) Deschedule(ctx context.Context, nodes []*v1.Node) *frameworktypes.Status {
 	ctx = klog.NewContext(ctx, d.logger)
 	logger := klog.FromContext(ctx).WithValues("ExtensionPoint", frameworktypes.DescheduleExtensionPoint)
+
+	// pendingPods tracks pods that have already been selected for eviction and the node each of
+	// them is tentatively expected to be rescheduled onto. Their resource requests are subtracted
+	// from the candidate nodes so we don't evict more pods than the cluster can absorb.
+	pendingPods := map[string][]*v1.Pod{}
+
 	for _, node := range nodes {
 		pods, err := podutil.ListPodsOnANode(node.Name, d.handle.GetPodsAssignedToNodeFunc(), d.podFilter)
 		logger.V(1).Info("Processing node", "node", klog.KObj(node))
@@ -122,9 +129,24 @@ func (d *RemovePodsViolatingNodeTaints) Deschedule(ctx context.Context, nodes []
 	loop:
 		for i := 0; i < totalPods; i++ {
 			if !utils.TolerationsTolerateTaintsWithFilter(ctx, pods[i].Spec.Tolerations, node.Spec.Taints, d.taintFilterFnc) {
+				fit := nodeutil.PodFitsAnyOtherNodeExceptKarpenterAccounting(d.handle.GetPodsAssignedToNodeFunc(), pods[i], nodes, pendingPods)
+				if fit.Node == nil {
+					if fit.ResourceLimited {
+						logger.V(3).Info("Skipping eviction for pod, not enough capacity left on any other node", "pod", klog.KObj(pods[i]))
+						continue
+					}
+					if fit.KarpenterOnly {
+						logger.V(3).Info("Skipping eviction for pod, only Karpenter nodes can accommodate it", "pod", klog.KObj(pods[i]))
+						continue
+					}
+				}
+
 				logger.V(2).Info("Not all taints with NoSchedule effect are tolerated after update for pod on node", "pod", klog.KObj(pods[i]), "node", klog.KObj(node))
 				err := d.handle.Evictor().Evict(ctx, pods[i], evictions.EvictOptions{StrategyName: PluginName})
 				if err == nil {
+					if fit.Node != nil {
+						pendingPods[fit.Node.Name] = append(pendingPods[fit.Node.Name], pods[i])
+					}
 					continue
 				}
 				switch err.(type) {
